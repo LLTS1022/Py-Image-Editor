@@ -1,9 +1,13 @@
-import tkinter as tk
-from tkinter import filedialog, messagebox
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageTk
-import os
+import streamlit as st
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
+from streamlit_drawable_canvas import st_canvas
 import numpy as np
+import io
 
+st.set_page_config(page_title="Image Editor", layout="centered")
+st.title("🖼️ Image Editor with Freehand Mask")
+
+# Core processing functions
 def round_image_border(image):
     width, height = image.size
     radius = min(width, height) // 2
@@ -43,118 +47,61 @@ def remove_background(image, tolerance=60):
     arr[mask, 3] = 0
     return Image.fromarray(arr)
 
-def draw_custom_mask(image):
-    top = tk.Toplevel()
-    top.title("Draw Freehand Mask")
+def apply_drawn_mask(base_image, mask_data):
+    if mask_data is None:
+        return base_image
+    mask_array = np.array(mask_data)
+    if mask_array.ndim == 3:
+        mask_array = mask_array[:, :, 3]  # Use alpha channel
+    mask_binary = (mask_array > 0).astype(np.uint8)
 
-    canvas = tk.Canvas(top, width=image.width, height=image.height, cursor="cross")
-    canvas.pack()
+    base_np = np.array(base_image.convert("RGBA"))
+    base_np[..., 3] = base_np[..., 3] * mask_binary  # Apply mask to alpha
+    return Image.fromarray(base_np)
 
-    # ✅ Prevent image garbage collection
-    top.tk_image = ImageTk.PhotoImage(image)
-    canvas.create_image(0, 0, anchor='nw', image=top.tk_image)
+# Upload and edit interface
+uploaded = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
+if uploaded:
+    image = Image.open(uploaded).convert("RGBA")
+    st.image(image, caption="Original Image", use_column_width=True)
 
-    draw_points = []
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("Round Border"):
+            image = round_image_border(image)
+    with col2:
+        if st.button("Grayscale"):
+            image = apply_grayscale(image)
+    with col3:
+        if st.button("Blur"):
+            image = apply_blur(image)
 
-    def on_press(event):
-        draw_points.clear()
-        draw_points.append((event.x, event.y))
+    if st.button("Brighten"):
+        image = apply_brightness(image)
 
-    def on_drag(event):
-        x, y = event.x, event.y
-        draw_points.append((x, y))
-        if len(draw_points) > 1:
-            canvas.create_line(draw_points[-2][0], draw_points[-2][1], x, y, fill="red", width=2)
+    if st.button("Remove Background"):
+        image = remove_background(image)
 
-    def on_release(event):
-        if len(draw_points) < 3:
-            messagebox.showerror("Error", "Draw a closed shape with at least 3 points.")
-            return
+    st.subheader("✏️ Draw to Mask Background (Freehand)")
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 0, 0, 150)",
+        stroke_width=20,
+        stroke_color="#ffffff",
+        background_image=image,
+        update_streamlit=True,
+        height=image.height,
+        width=image.width,
+        drawing_mode="freedraw",
+        key="canvas"
+    )
 
-        # Create polygon mask
-        mask = Image.new("L", image.size, 0)
-        ImageDraw.Draw(mask).polygon(draw_points, fill=255)
+    if st.button("Apply Freehand Mask"):
+        if canvas_result.image_data is not None:
+            image = apply_drawn_mask(image, canvas_result.image_data)
+            st.success("Mask applied!")
 
-        # Apply mask to alpha channel
-        image_rgba = image.convert("RGBA")
-        np_image = np.array(image_rgba)
-        np_mask = np.array(mask)
-        np_image[..., 3] = np.where(np_mask == 255, np_image[..., 3], 0)
+    st.image(image, caption="Edited Image", use_column_width=True)
 
-        result = Image.fromarray(np_image)
-        save_path = os.path.splitext(input_entry.get())[0] + "_custom_masked.png"
-        result.save(save_path)
-        messagebox.showinfo("Saved", f"Image saved as {save_path}")
-        top.destroy()
-
-    canvas.bind("<ButtonPress-1>", on_press)
-    canvas.bind("<B1-Motion>", on_drag)
-    canvas.bind("<ButtonRelease-1>", on_release)
-
-def select_file():
-    file_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg *.jpeg *.png")])
-    if file_path:
-        input_entry.delete(0, tk.END)
-        input_entry.insert(0, file_path)
-
-def process_image(mode):
-    input_path = input_entry.get()
-    if not input_path or not os.path.exists(input_path):
-        messagebox.showerror("Error", "Please select a valid image file.")
-        return
-
-    image = Image.open(input_path).convert("RGBA")
-
-    if mode == "round":
-        edited_image = round_image_border(image)
-        suffix = "_rounded"
-    elif mode == "grayscale":
-        edited_image = apply_grayscale(image)
-        suffix = "_grayscale"
-    elif mode == "blur":
-        edited_image = apply_blur(image)
-        suffix = "_blur"
-    elif mode == "brighten":
-        edited_image = apply_brightness(image)
-        suffix = "_brightened"
-    elif mode == "remove_bg":
-        edited_image = remove_background(image)
-        suffix = "_nobg"
-    elif mode == "custom_mask":
-        draw_custom_mask(image)
-        return
-    else:
-        return
-
-    output_path = os.path.splitext(input_path)[0] + suffix + ".png"
-    edited_image.save(output_path)
-    messagebox.showinfo("Success", f"Image saved as {output_path}")
-
-# GUI
-app = tk.Tk()
-app.title("Image Editor GUI")
-app.geometry("600x340")
-
-frame = tk.Frame(app, padx=10, pady=10)
-frame.pack(expand=True, fill=tk.BOTH)
-
-input_label = tk.Label(frame, text="Select an image:")
-input_label.pack(anchor='w')
-
-input_entry = tk.Entry(frame, width=50)
-input_entry.pack(side=tk.LEFT, padx=(0, 5))
-
-browse_button = tk.Button(frame, text="Browse", command=select_file)
-browse_button.pack(side=tk.LEFT)
-
-buttons_frame = tk.Frame(app)
-buttons_frame.pack(pady=20)
-
-tk.Button(buttons_frame, text="Round Border", command=lambda: process_image("round")).grid(row=0, column=0, padx=5)
-tk.Button(buttons_frame, text="Grayscale", command=lambda: process_image("grayscale")).grid(row=0, column=1, padx=5)
-tk.Button(buttons_frame, text="Blur", command=lambda: process_image("blur")).grid(row=0, column=2, padx=5)
-tk.Button(buttons_frame, text="Brighten", command=lambda: process_image("brighten")).grid(row=0, column=3, padx=5)
-tk.Button(buttons_frame, text="Remove Background", command=lambda: process_image("remove_bg")).grid(row=0, column=4, padx=5)
-tk.Button(buttons_frame, text="Freehand Mask", command=lambda: process_image("custom_mask")).grid(row=1, column=2, pady=10)
-
-app.mainloop()
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    st.download_button("Download Result", buf.getvalue(), "edited.png", "image/png")
